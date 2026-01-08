@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import LoginPage from "./LoginPage"; // Importa nossa nova página de login
+import EditorEmail from "./EditorEmail";
 import "./App.css";
 
 // A URL da API do backend
@@ -26,6 +27,9 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
 
   const [clientes, setClientes] = useState([]);
+
+  // Guarda a página atual. Começamos em 'clientes'.
+  const [paginaAtual, setPaginaAtual] = useState("clientes");
 
   // Estados para o formulário de "Adicionar"
   const [novoNome, setNovoNome] = useState("");
@@ -72,7 +76,7 @@ function App() {
     setClientes([]); // Limpa a lista de clientes da tela
   };
 
-  // --- Funções de Gerenciamento de Clientes (Exatamente como antes) ---
+  // --- Funções de Gerenciamento de Clientes ---
 
   async function fetchClientes() {
     try {
@@ -152,94 +156,124 @@ function App() {
 
   // --- A RENDERIZAÇÃO CONDICIONAL ---
 
+  // PRIMEIRO VERIFICAMOS: O usuário NÃO está logado?
   if (!token) {
-    // Se NÃO HÁ TOKEN, mostre a Página de Login
+    // Se NÃO HÁ TOKEN, mostre a Página de Login e pare aqui
     return <LoginPage onLogin={handleLogin} />;
   }
 
-  // Se HÁ TOKEN, mostre o Gerenciador de Clientes
+  // SE CHEGOU AQUI, o usuário ESTÁ logado.
+  // Então, mostre o PAINEL DE CONTROLE PRINCIPAL:
   return (
     <div className="App">
-      <header className="App-header">
-        <h1>Level Marketing - Gerenciador</h1>
-        <button
-          onClick={handleLogout}
-          style={{ position: "absolute", top: "20px", right: "20px" }}
-        >
-          Sair (Logout)
-        </button>
+      {/* --- O NOVO CABEÇALHO DE NAVEGAÇÃO --- */}
+      <header className="main-header">
+        <h1>Level Marketing</h1>
+        <nav>
+          <button
+            onClick={() => setPaginaAtual("clientes")}
+            className={paginaAtual === "clientes" ? "active" : ""}
+          >
+            Gerenciar Clientes
+          </button>
+          <button
+            onClick={() => setPaginaAtual("editor")}
+            className={paginaAtual === "editor" ? "active" : ""}
+          >
+            Criar Campanha
+          </button>
 
-        {/* Formulário de Adicionar */}
-        <form onSubmit={handleSubmit}>
-          <h3>Adicionar Novo Cliente</h3>
-          <div>
-            <input
-              type="text"
-              placeholder="Nome"
-              value={novoNome}
-              onChange={(e) => setNovoNome(e.target.value)}
-            />
-          </div>
-          <div>
-            <input
-              type="email"
-              placeholder="Email"
-              value={novoEmail}
-              onChange={(e) => setNovoEmail(e.target.value)}
-            />
-          </div>
-          <button type="submit">Adicionar Cliente</button>
-        </form>
-
-        <h2>Lista de Clientes Atuais</h2>
-        <ul>
-          {clientes.map((cliente) => (
-            <li key={cliente.id}>
-              {editingClientId === cliente.id ? (
-                // MODO DE EDIÇÃO
-                <>
-                  <input
-                    type="text"
-                    value={editNome}
-                    onChange={(e) => setEditNome(e.target.value)}
-                  />
-                  <input
-                    type="email"
-                    value={editEmail}
-                    onChange={(e) => setEditEmail(e.target.value)}
-                  />
-                  <button onClick={() => handleSaveEdit(cliente.id)}>
-                    Salvar
-                  </button>
-                  <button onClick={handleCancelEdit}>Cancelar</button>
-                </>
-              ) : (
-                // MODO DE VISUALIZAÇÃO
-                <>
-                  <span>
-                    <strong>Nome:</strong> {cliente.nome} -{" "}
-                    <strong>Email:</strong> {cliente.email}
-                  </span>
-                  <button
-                    onClick={() => handleEditClick(cliente)}
-                    style={{ marginLeft: "10px" }}
-                  >
-                    Editar
-                  </button>
-                  <button
-                    onClick={() => handleDelete(cliente.id)}
-                    style={{ marginLeft: "5px" }}
-                  >
-                    Deletar
-                  </button>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+          {/* O botão de sair agora usando suas funções reais */}
+          <button className="btn-logout-nav" onClick={handleLogout}>
+            Sair
+          </button>
+        </nav>
       </header>
+
+      {/* --- O CONTEÚDO DA PÁGINA ATUAL --- */}
+      <main className="main-content">
+        {/* Mostra o Gerenciador de Clientes */}
+        {paginaAtual === "clientes" && (
+          <div className="clientes-container">
+            {/* Formulário de Adicionar */}
+            <form onSubmit={handleSubmit}>
+              <h3>Adicionar Novo Cliente</h3>
+              <div>
+                <input
+                  type="text"
+                  placeholder="Nome"
+                  value={novoNome}
+                  onChange={(e) => setNovoNome(e.target.value)}
+                />
+              </div>
+              <div>
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={novoEmail}
+                  onChange={(e) => setNovoEmail(e.target.value)}
+                />
+              </div>
+              <button type="submit">Adicionar Cliente</button>
+            </form>
+
+            <h2>Lista de Clientes Atuais</h2>
+            <ul>
+              {clientes.map((cliente) => (
+                <li key={cliente.id}>
+                  {editingClientId === cliente.id ? (
+                    // MODO DE EDIÇÃO
+                    <>
+                      <input
+                        type="text"
+                        value={editNome}
+                        onChange={(e) => setEditNome(e.target.value)}
+                      />
+                      <input
+                        type="email"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                      />
+                      <button onClick={() => handleSaveEdit(cliente.id)}>
+                        Salvar
+                      </button>
+                      <button onClick={handleCancelEdit}>Cancelar</button>
+                    </>
+                  ) : (
+                    // MODO DE VISUALIZAÇÃO (CORRIGIDO)
+                    <>
+                      <strong>
+                        <span>
+                          <strong>Nome:</strong> {cliente.nome} -{" "}
+                          <strong>Email:</strong> {cliente.email}
+                        </span>
+                      </strong>
+
+                      <button
+                        onClick={() => handleEditClick(cliente)}
+                        style={{ marginLeft: "10px" }}
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => handleDelete(cliente.id)}
+                        style={{ marginLeft: "5px" }}
+                      >
+                        Deletar
+                      </button>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Mostra o Editor de Email */}
+        {paginaAtual === "editor" && <EditorEmail />}
+      </main>
     </div>
   );
-}
+} // <-- Esta é a chave } que fecha a "function App()"
 
 export default App;

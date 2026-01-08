@@ -1,283 +1,217 @@
 const express = require("express");
-const pool = require("./db"); // Importa o nosso pool de conexões
-const app = express();
-const port = 3001;
-// Chave secreta para assinar o JWT
-const JWT_SECRET = "levelmarketing_segredo_super_secreto_12345";
-
-// === MIDDLEWARE DE AUTENTICAÇÃO ===
-// Este é o nosso "segurança"
-const autenticarToken = (req, res, next) => {
-  // 1. O token (crachá) vem no cabeçalho 'Authorization'
-  // O formato é "Bearer TOKEN_LONGO_AQUI"
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Pega só o token
-
-  // 2. Se não veio o crachá, barra a entrada
-  if (token == null) {
-    return res.status(401).send('Acesso negado. Nenhum token fornecido.');
-  }
-
-  // 3. Verifica se o crachá é válido
-  jwt.verify(token, JWT_SECRET, (err, usuario) => {
-    // Se o crachá for inválido ou expirou...
-    if (err) {
-      return res.status(403).send('Token inválido ou expirado.'); // 403 = Proibido
-    }
-
-    // 4. Se o crachá é VÁLIDO!
-    // Anexamos os dados do usuário (ex: id, username) na requisição
-    req.usuario = usuario; 
-
-    // Deixa a requisição "passar" para a próxima função (a rota real)
-    next(); 
-  });
-};
-
-// === Middlewares ===
-// Habilita o Express para entender JSON no corpo das requisições
-app.use(express.json());
-
-// (Opcional, mas recomendado) Habilita o CORS para permitir que o frontend (React) chame o backend
-// Instale com: npm install cors
+const pool = require("./db");
 const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-app.use(cors()); // Por enquanto, permite de qualquer origem
+const nodemailer = require("nodemailer");
+const cron = require("node-cron");
 
-// === Rotas da API ===
+const app = express();
+const port = 3001;
+const JWT_SECRET = "levelmarketing_segredo_super_secreto_12345";
 
-// === AUTENTICAÇÃO ===
+app.use(express.json());
+app.use(cors());
 
-// Rota para REGISTRAR um novo usuário
+// Configuração do Motor de Envio (Mailtrap)
+const transporter = nodemailer.createTransport({
+  host: "sandbox.smtp.mailtrap.io",
+  port: 2525,
+  auth: {
+    user: "ba173c523de08a",
+    pass: "32e580a7bb8edb",
+  },
+});
 
-app.post("/api/register", async (req, res) => {
+const autenticarToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (token == null) return res.status(401).send("Acesso negado.");
+  jwt.verify(token, JWT_SECRET, (err, usuario) => {
+    if (err) return res.status(403).send("Token inválido.");
+    req.usuario = usuario;
+    next();
+  });
+};
+
+// === VIGIA DE AGENDAMENTOS (Roda a cada minuto) ===
+cron.schedule("* * * * *", async () => {
+  console.log("⏰ Checando agendamentos...");
+  let connection;
   try {
-    const { username, password } = req.body;
-
-    // 1. Validação simples
-    if (!username || !password) {
-      return res.status(400).send("Usuário e senha são obrigatórios.");
-    }
-
-    // 2. Criptografar (hashear) a senha
-    // "salt rounds" (10) é o custo do processamento. 10 é um bom padrão.
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // 3. Salvar no banco de dados
-    const connection = await pool.getConnection();
-
-    await connection.execute(
-      "INSERT INTO usuarios (username, password) VALUES (?, ?)",
-      [username, hashedPassword]
+    connection = await pool.getConnection();
+    const [agendados] = await connection.execute(
+      "SELECT * FROM campanhas_agendadas WHERE status = 'pendente' AND data_agendamento <= NOW()"
     );
 
-    connection.release();
+    for (let agendamento of agendados) {
+      const [templates] = await connection.execute(
+        "SELECT * FROM email_templates WHERE id = ?",
+        [agendamento.id_template]
+      );
+      const [clientes] = await connection.execute("SELECT * FROM clientes");
+      const template = templates[0];
 
-    // 4. Enviar resposta de sucesso
-    res.status(201).send("Usuário registrado com sucesso!");
-  } catch (error) {
-    // "error.code === 'ER_DUP_ENTRY'" é o erro do MySQL para chave duplicada
-    // Isso acontece se o username já existir (graças ao UNIQUE)
-    if (error.code === "ER_DUP_ENTRY") {
-      return res.status(409).send("Este nome de usuário já existe.");
+      for (let cliente of clientes) {
+        let htmlPersonalizado = template.conteudo_html
+          .replace(/{nome}/g, cliente.nome)
+          .replace(/{sobrenome}/g, cliente.sobrenome || "")
+          .replace(/{email}/g, cliente.email);
+
+        await transporter.sendMail({
+          from: '"Level Marketing" <contato@levelmarketing.com>',
+          to: cliente.email,
+          subject: template.titulo,
+          html: htmlPersonalizado,
+        });
+      }
+      await connection.execute(
+        "UPDATE campanhas_agendadas SET status = 'enviado' WHERE id = ?",
+        [agendamento.id]
+      );
+      console.log(
+        `✅ Campanha agendada ${agendamento.id} enviada com sucesso.`
+      );
     }
-
-    // Outros erros
-    console.error("Erro no registro:", error);
-    res.status(500).send("Erro no servidor ao registrar usuário.");
+  } catch (error) {
+    console.error("Erro no Cron:", error);
+  } finally {
+    if (connection) connection.release();
   }
 });
 
-// Rota para LOGAR um usuário
+// --- ROTAS DA API ---
+
 app.post("/api/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-
-    // 1. Validação
-    if (!username || !password) {
-      return res.status(400).send("Usuário e senha são obrigatórios.");
-    }
-
-    // 2. Buscar o usuário no banco
     const connection = await pool.getConnection();
     const [rows] = await connection.execute(
       "SELECT * FROM usuarios WHERE username = ?",
       [username]
     );
-
-    // 3. Verificar se o usuário existe
-    if (rows.length === 0) {
+    if (
+      rows.length === 0 ||
+      !(await bcrypt.compare(password, rows[0].password))
+    ) {
       connection.release();
-      // Usamos uma mensagem genérica por segurança
-      return res.status(401).send("Usuário ou senha inválidos.");
+      return res.status(401).send("Credenciais inválidas.");
     }
-
-    const usuario = rows[0]; // Pegamos o primeiro (e único) usuário
-
-    // 4. Comparar a senha enviada com a senha criptografada no banco
-    const senhaCorreta = await bcrypt.compare(password, usuario.password);
-
-    if (!senhaCorreta) {
-      connection.release();
-      return res.status(401).send("Usuário ou senha inválidos.");
-    }
-
-    // 5. Se chegou aqui, o usuário e a senha estão corretos!
-    // Gerar o "crachá" (Token JWT)
-    const payload = {
-      id: usuario.id,
-      username: usuario.username,
-    };
-
     const token = jwt.sign(
-      payload,
+      { id: rows[0].id, username: rows[0].username },
       JWT_SECRET,
-      { expiresIn: "8h" } // Token expira em 8 horas
+      { expiresIn: "8h" }
     );
-
     connection.release();
-
-    // 6. Enviar o token para o frontend!
-    res.json({
-      message: "Login bem-sucedido!",
-      token: token,
-    });
+    res.json({ token });
   } catch (error) {
-    console.error("Erro no login:", error);
-    res.status(500).send("Erro no servidor ao tentar logar.");
+    res.status(500).send("Erro no login.");
   }
 });
 
-app.use('/api/clientes', autenticarToken);
-
-// Rota de teste
-app.get("/", (req, res) => {
-  res.send("Olá do Backend! A conexão com o banco foi testada no console.");
-});
-
-// [REQUISITO 1] - Gerenciamento de Lista de Emails
-// Rota para buscar todos os clientes (emails)
-app.get("/api/clientes", async (req, res) => {
-  try {
-    // 1. Pega uma conexão do pool
-    const connection = await pool.getConnection();
-
-    // 2. Executa a query (Exemplo: crie uma tabela 'clientes' antes)
-    const [rows] = await connection.execute("SELECT * FROM clientes");
-
-    // 3. Libera a conexão
-    connection.release();
-
-    // 4. Retorna os dados como JSON
-    res.json(rows);
-  } catch (error) {
-    console.error("Erro ao buscar clientes:", error);
-    res.status(500).send("Erro no servidor ao buscar clientes.");
-  }
-});
-
-// === GERENCIAMENTO DE CLIENTES ===
-
-// Rota para adicionar um novo cliente (email)
-app.post("/api/clientes", async (req, res) => {
-  // Pega os dados enviados pelo frontend (React)
-  const { nome, email } = req.body;
-
-  // [REQUISITO 1.15] Validação simples
-  if (!nome || !email) {
-    return res.status(400).send("Nome e email são obrigatórios.");
-  }
-
+app.post("/api/enviar-campanha", autenticarToken, async (req, res) => {
+  const { templateId } = req.body;
   try {
     const connection = await pool.getConnection();
-
-    // [REQUISITO 1.16] Adiciona na lista
-    const [result] = await connection.execute(
-      "INSERT INTO clientes (nome, email) VALUES (?, ?)",
-      [nome, email]
+    const [templates] = await connection.execute(
+      "SELECT * FROM email_templates WHERE id = ?",
+      [templateId]
     );
-
+    const [clientes] = await connection.execute("SELECT * FROM clientes");
     connection.release();
 
-    // Retorna uma resposta de sucesso
-    res.status(201).json({
-      message: "Cliente adicionado com sucesso!",
-      clienteId: result.insertId,
-    });
-  } catch (error) {
-    console.error("Erro ao adicionar cliente:", error);
-    res.status(500).send("Erro no servidor ao adicionar cliente.");
-  }
-});
+    for (let cliente of clientes) {
+      let html = templates[0].conteudo_html
+        .replace(/{nome}/g, cliente.nome)
+        .replace(/{sobrenome}/g, cliente.sobrenome || "")
+        .replace(/{email}/g, cliente.email);
 
-// [REQUISITO 1.16] - Rota para DELETAR um cliente
-app.delete("/api/clientes/:id", async (req, res) => {
-  // Pega o ID da URL (ex: /api/clientes/5)
-  const { id } = req.params;
-
-  try {
-    const connection = await pool.getConnection();
-
-    // Executa o comando SQL para deletar
-    const [result] = await connection.execute(
-      "DELETE FROM clientes WHERE id = ?",
-      [id]
-    );
-
-    connection.release();
-
-    // Verifica se algo foi realmente deletado
-    if (result.affectedRows === 0) {
-      // Se nenhum cliente com esse ID foi encontrado
-      return res.status(404).send("Cliente não encontrado.");
+      await transporter.sendMail({
+        from: '"Level Marketing" <contato@levelmarketing.com>',
+        to: cliente.email,
+        subject: templates[0].titulo,
+        html: html,
+      });
     }
-
-    // Envia uma resposta de sucesso (204 = "No Content", ou seja, sucesso sem corpo)
-    res.status(204).send();
+    res.send("Campanha disparada com sucesso!");
   } catch (error) {
-    console.error("Erro ao deletar cliente:", error);
-    res.status(500).send("Erro no servidor ao deletar cliente.");
+    res.status(500).send("Erro no envio.");
   }
 });
 
-// [REQUISITO 1.16] - Rota para ATUALIZAR (Editar) um cliente
-app.put("/api/clientes/:id", async (req, res) => {
-  // Pega o ID da URL
-  const { id } = req.params;
-  // Pega os novos dados do corpo da requisição
-  const { nome, email } = req.body;
-
-  // Validação simples
-  if (!nome || !email) {
-    return res.status(400).send("Nome e email são obrigatórios.");
-  }
-
+app.post("/api/agendar-campanha", autenticarToken, async (req, res) => {
+  const { templateId, dataHora } = req.body;
   try {
     const connection = await pool.getConnection();
-
-    // Executa o comando SQL UPDATE
-    const [result] = await connection.execute(
-      "UPDATE clientes SET nome = ?, email = ? WHERE id = ?",
-      [nome, email, id]
+    await connection.execute(
+      "INSERT INTO campanhas_agendadas (id_template, id_usuario, data_agendamento) VALUES (?, ?, ?)",
+      [templateId, req.usuario.id, dataHora]
     );
-
     connection.release();
-
-    // Verifica se algo foi realmente atualizado
-    if (result.affectedRows === 0) {
-      return res.status(404).send("Cliente não encontrado.");
-    }
-
-    // Envia uma resposta de sucesso (200 = OK)
-    res.status(200).json({ Clienid: id, nome: nome, email: email });
+    res.status(201).send("Agendado com sucesso!");
   } catch (error) {
-    console.error("Erro ao atualizar cliente:", error);
-    res.status(500).send("Erro no servidor ao atualizar cliente.");
+    res.status(500).send("Erro ao agendar.");
   }
 });
 
-// Inicia o servidor
-app.listen(port, () => {
-  console.log(`Servidor backend rodando em http://localhost:${port}`);
+app.get("/api/templates", autenticarToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  const [rows] = await connection.execute(
+    "SELECT id, titulo, data_criacao FROM email_templates WHERE id_usuario = ?",
+    [req.usuario.id]
+  );
+  connection.release();
+  res.json(rows);
 });
+
+app.get("/api/templates/detalhes/:id", autenticarToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  const [rows] = await connection.execute(
+    "SELECT * FROM email_templates WHERE id = ?",
+    [req.params.id]
+  );
+  connection.release();
+  res.json(rows[0]);
+});
+
+app.post("/api/templates", autenticarToken, async (req, res) => {
+  const { titulo, conteudo_html } = req.body;
+  const connection = await pool.getConnection();
+  await connection.execute(
+    "INSERT INTO email_templates (titulo, conteudo_html, id_usuario) VALUES (?, ?, ?)",
+    [titulo, conteudo_html, req.usuario.id]
+  );
+  connection.release();
+  res.send("Salvo!");
+});
+
+app.delete("/api/templates/:id", autenticarToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  await connection.execute("DELETE FROM email_templates WHERE id = ?", [
+    req.params.id,
+  ]);
+  connection.release();
+  res.sendStatus(204);
+});
+
+app.get("/api/clientes", autenticarToken, async (req, res) => {
+  const connection = await pool.getConnection();
+  const [rows] = await connection.execute("SELECT * FROM clientes");
+  connection.release();
+  res.json(rows);
+});
+
+app.post("/api/clientes", autenticarToken, async (req, res) => {
+  const { nome, email } = req.body;
+  const connection = await pool.getConnection();
+  await connection.execute("INSERT INTO clientes (nome, email) VALUES (?, ?)", [
+    nome,
+    email,
+  ]);
+  connection.release();
+  res.status(201).send("Cliente adicionado!");
+});
+
+app.listen(port, () =>
+  console.log(`Backend rodando em http://localhost:${port}`)
+);
